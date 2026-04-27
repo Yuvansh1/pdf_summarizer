@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF RAG Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --bg: #0a0a0a; --surface: #141414; --surface2: #1e1e1e;
+            --border: #2a2a2a; --gold: #c9a84c; --gold-dim: #8a6f2e;
+            --text: #e8e2d9; --muted: #7a7168;
+        }
+        body {
+            font-family: 'Source Serif 4', serif;
+            background: var(--bg); color: var(--text);
+            height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+        }
+        header {
+            padding: 1rem 2rem; border-bottom: 1px solid var(--border);
+            display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+        }
+        .main-container {
+            display: grid; grid-template-columns: 1fr 450px; flex: 1; overflow: hidden;
+        }
+        #viewer-container {
+            background: #000; border-right: 1px solid var(--border);
+            position: relative; display: flex; align-items: center; justify-content: center;
+        }
+        #pdf-render { width: 100%; height: 100%; border: none; }
+        .upload-btn-wrapper {
+            background: var(--surface); padding: 2.5rem;
+            border: 2px dashed var(--gold-dim); border-radius: 12px;
+            text-align: center; cursor: pointer; transition: 0.3s;
+        }
+        .upload-btn-wrapper:hover { border-color: var(--gold); }
+        #chat-container { display: flex; flex-direction: column; background: var(--surface); }
+        #messages { flex: 1; overflow-y: auto; padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+        .msg-query {
+            align-self: flex-end; background: var(--surface2); padding: 0.8rem;
+            border-radius: 10px; border: 1px solid var(--border); max-width: 80%;
+        }
+        .answer-card {
+            background: rgba(255,255,255,0.03); border: 1px solid var(--border);
+            border-radius: 10px; padding: 1rem; white-space: pre-wrap; line-height: 1.6;
+        }
+        .input-box { padding: 1.5rem; border-top: 1px solid var(--border); }
+        .input-wrapper { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem; }
+        textarea {
+            width: 100%; background: transparent; border: none; color: #fff;
+            resize: none; outline: none; font-size: 1rem; padding: 0.5rem;
+        }
+        .ask-btn {
+            width: 100%; margin-top: 0.5rem; background: var(--gold);
+            color: #000; border: none; padding: 0.7rem; border-radius: 5px;
+            font-weight: bold; cursor: pointer; transition: 0.2s;
+        }
+        .ask-btn:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+        .hidden { display: none !important; }
+        #meta-info { font-size: 0.72rem; color: var(--muted); }
+        .thinking { color: var(--muted); font-style: italic; }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1 style="color: var(--gold)">PDF RAG Assistant</h1>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:2px;">
+        <div id="file-status" style="color: var(--muted); font-size: 0.8rem;">OFFLINE</div>
+        <div id="meta-info"></div>
+    </div>
+</header>
+
+<main class="main-container">
+    <section id="viewer-container">
+        <div id="upload-overlay">
+            <label class="upload-btn-wrapper">
+                <input type="file" id="file-input" accept=".pdf" class="hidden">
+                <div style="font-size: 2rem;">📤</div>
+                <p style="margin-top:0.5rem;">Click to Upload PDF</p>
+                <p style="color:var(--muted); font-size:0.8rem; margin-top:0.3rem;">Any size — full document is indexed</p>
+            </label>
+        </div>
+        <iframe id="pdf-render" class="hidden"></iframe>
+    </section>
+
+    <section id="chat-container">
+        <div id="messages"></div>
+        <div class="input-box">
+            <div class="input-wrapper">
+                <textarea id="query-input" rows="3" placeholder="Upload a PDF first..." disabled></textarea>
+                <button id="ask-btn" class="ask-btn" onclick="handleAsk()" disabled>Ask</button>
+            </div>
+        </div>
+    </section>
+</main>
+
+<script>
+    const API_BASE = 'http://localhost:8080';
+    let sessionId = null;
+
+    const fileInput = document.getElementById('file-input');
+    const queryInput = document.getElementById('query-input');
+    const askBtn = document.getElementById('ask-btn');
+    const statusText = document.getElementById('file-status');
+    const metaInfo = document.getElementById('meta-info');
+
+    fileInput.addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        document.getElementById('pdf-render').src = URL.createObjectURL(file);
+        document.getElementById('pdf-render').classList.remove('hidden');
+        document.getElementById('upload-overlay').classList.add('hidden');
+
+        statusText.textContent = "UPLOADING...";
+        statusText.style.color = "var(--muted)";
+        metaInfo.textContent = "";
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Server error");
+            }
+
+            const data = await res.json();
+            sessionId = data.session_id;
+
+            statusText.textContent = "READY: " + file.name;
+            statusText.style.color = "var(--gold)";
+            metaInfo.textContent = `${data.pages} pages · ${data.chunks} chunks indexed`;
+            queryInput.disabled = false;
+            queryInput.placeholder = "Ask anything about the document...";
+            askBtn.disabled = false;
+        } catch (err) {
+            statusText.textContent = "UPLOAD FAILED";
+            statusText.style.color = "red";
+            metaInfo.textContent = err.message;
+        }
+    });
+
+    async function handleAsk() {
+        const query = queryInput.value.trim();
+        if (!query || !sessionId) return;
+
+        appendMessage('user', query);
+        queryInput.value = '';
+        askBtn.disabled = true;
+
+        const thinkingEl = appendMessage('ai', '...thinking', true);
+
+        try {
+            const res = await fetch(`${API_BASE}/ask`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, query }),
+            });
+            const data = await res.json();
+            thinkingEl.remove();
+            appendMessage('ai', data.answer || data.detail || "No response.");
+        } catch (err) {
+            thinkingEl.remove();
+            appendMessage('ai', "Error connecting to server. Is the backend running?");
+        } finally {
+            askBtn.disabled = false;
+        }
+    }
+
+    function appendMessage(role, text, isThinking = false) {
+        const div = document.createElement('div');
+        div.className = role === 'user' ? 'msg-query' : 'answer-card';
+        if (isThinking) div.classList.add('thinking');
+        div.textContent = text;
+        const msgs = document.getElementById('messages');
+        msgs.appendChild(div);
+        msgs.scrollTop = msgs.scrollHeight;
+        return div;
+    }
+
+    // Allow Shift+Enter for newline, Enter alone to submit
+    queryInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (!askBtn.disabled) handleAsk();
+        }
+    });
+</script>
+</body>
+</html>
